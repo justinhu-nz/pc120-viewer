@@ -31,6 +31,10 @@ const dataUrl = (filename: string) => {
   const relative = `${import.meta.env.BASE_URL}data/${filename}`;
   return typeof window === 'undefined' ? relative : new URL(relative, window.location.href).href;
 };
+const publicUrl = (filename: string) => {
+  const relative = `${import.meta.env.BASE_URL}${filename}`;
+  return typeof window === 'undefined' ? relative : new URL(relative, window.location.href).href;
+};
 const emptyGeoJSON = { type: 'FeatureCollection', features: [] } as const;
 const baseStyle = {
   version: 8,
@@ -86,6 +90,7 @@ export default function PC120Map() {
     if (!container.current || mapRef.current) return; let disposed = false;
     import('maplibre-gl').then((maplibregl) => {
       if (disposed || !container.current) return;
+      maplibregl.setWorkerUrl(publicUrl('vendor/maplibre-gl-worker.mjs'));
       const map = new maplibregl.Map({ container: container.current, style: baseStyle as never, center: [174.76, -36.91], zoom: 9.4, minZoom: 7, maxZoom: 18, attributionControl: false });
       mapRef.current = map; map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
       map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: 'Auckland Council data' }));
