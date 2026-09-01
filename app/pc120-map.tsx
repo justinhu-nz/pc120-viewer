@@ -2,7 +2,7 @@
 
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { useEffect, useRef, useState } from 'react';
-import type { Map as MapLibreMap, MapMouseEvent } from 'maplibre-gl';
+import type { GeoJSONSource, Map as MapLibreMap, MapMouseEvent } from 'maplibre-gl';
 import { ChevronDown, Info, Layers3, LocateFixed, Menu, PanelLeftClose, RotateCcw, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
@@ -27,7 +27,11 @@ const zoneExpression: any[] = ['match', ['get', 'category'], ...Object.entries(z
   'Open Space - Community Zone', '#b3ea00', 'Open Space - Conservation Zone', '#52b529',
   'Open Space - Informal Recreation Zone', '#8cbf78', 'Open Space - Sport and Active Recreation Zone', '#d3ffbe', '#b2b2b2'];
 
-const dataUrl = (filename: string) => `${import.meta.env.BASE_URL}data/${filename}`;
+const dataUrl = (filename: string) => {
+  const relative = `${import.meta.env.BASE_URL}data/${filename}`;
+  return typeof window === 'undefined' ? relative : new URL(relative, window.location.href).href;
+};
+const emptyGeoJSON = { type: 'FeatureCollection', features: [] } as const;
 const overlays = [
   { id: 'walkable', label: 'Walkable catchments', url: dataUrl('walkable-catchments.geojson'), colour: '#2563eb' },
   { id: 'transport', label: 'Frequent transport corridor', url: dataUrl('frequent-transport.geojson'), colour: '#7c3aed' },
@@ -58,6 +62,7 @@ const storeyLabel = (height: string) => {
 
 export default function PC120Map() {
   const container = useRef<HTMLDivElement>(null); const mapRef = useRef<MapLibreMap | null>(null);
+  const loadedSources = useRef(new Set<string>(['proposed']));
   const [ready, setReady] = useState(false); const [mode, setMode] = useState<ViewMode>('proposed');
   const [activeOverlays, setActiveOverlays] = useState<Record<string, boolean>>({}); const [sidebarOpen, setSidebarOpen] = useState(true);
   const [selection, setSelection] = useState<Selection>(null); const [placeOpen, setPlaceOpen] = useState(false);
@@ -74,12 +79,12 @@ export default function PC120Map() {
       map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: 'Auckland Council data' }));
       map.on('load', () => {
         ([['operative', dataUrl('operative-zoning.geojson')], ['proposed', dataUrl('pc120-zoning.geojson')]] as const).forEach(([id, url]) => {
-          map.addSource(`${id}-source`, { type: 'geojson', data: url });
+          map.addSource(`${id}-source`, { type: 'geojson', data: id === 'proposed' ? url : emptyGeoJSON });
           map.addLayer({ id: `${id}-fill`, type: 'fill', source: `${id}-source`, paint: { 'fill-color': zoneExpression as never, 'fill-opacity': 1 }, layout: { visibility: id === 'proposed' ? 'visible' : 'none' } });
           map.addLayer({ id: `${id}-line`, type: 'line', source: `${id}-source`, paint: { 'line-color': '#767676', 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.2, 15, 0.9], 'line-opacity': 0.42 }, layout: { visibility: id === 'proposed' ? 'visible' : 'none' } });
         });
         overlays.forEach((item) => {
-          map.addSource(`${item.id}-source`, { type: 'geojson', data: item.url });
+          map.addSource(`${item.id}-source`, { type: 'geojson', data: emptyGeoJSON });
           const isHeight = item.id === 'height';
           const filter = isHeight ? ['in', ['get', 'category'], ['literal', storeyValues]] as never : undefined;
           map.addLayer({ id: `${item.id}-fill`, type: 'fill', source: `${item.id}-source`, ...(filter ? { filter } : {}), paint: { 'fill-color': isHeight ? storeyColours(tenStoreyColour, fifteenStoreyColour) as never : item.colour, 'fill-opacity': isHeight ? 1 : 0.18 }, layout: { visibility: 'none' } });
@@ -103,6 +108,10 @@ export default function PC120Map() {
     const map = mapRef.current; if (!map || !ready) return;
     const proposedVisible = mode === 'proposed' || mode === 'overlay';
     const operativeVisible = mode === 'operative' || mode === 'overlay';
+    if (operativeVisible && !loadedSources.current.has('operative')) {
+      (map.getSource('operative-source') as GeoJSONSource).setData(dataUrl('operative-zoning.geojson'));
+      loadedSources.current.add('operative');
+    }
     map.setLayoutProperty('proposed-fill', 'visibility', proposedVisible ? 'visible' : 'none');
     map.setLayoutProperty('proposed-line', 'visibility', proposedVisible ? 'visible' : 'none');
     map.setLayoutProperty('operative-fill', 'visibility', operativeVisible ? 'visible' : 'none');
@@ -133,7 +142,17 @@ export default function PC120Map() {
     map.setLayoutProperty('business-restore-fill', 'visibility', restore ? 'visible' : 'none');
     map.setLayoutProperty('business-restore-line', 'visibility', restore ? 'visible' : 'none');
   }, [colourBusinessZones, activeOverlays.height, ready]);
-  const toggleOverlay = (id: string, checked: boolean) => { setActiveOverlays((current) => ({ ...current, [id]: checked })); const map = mapRef.current; if (!map || !ready) return; map.setLayoutProperty(`${id}-fill`, 'visibility', checked ? 'visible' : 'none'); map.setLayoutProperty(`${id}-line`, 'visibility', checked ? 'visible' : 'none'); };
+  const toggleOverlay = (id: string, checked: boolean) => {
+    setActiveOverlays((current) => ({ ...current, [id]: checked }));
+    const map = mapRef.current; if (!map || !ready) return;
+    if (checked && !loadedSources.current.has(id)) {
+      const overlay = overlays.find((item) => item.id === id);
+      if (overlay) (map.getSource(`${id}-source`) as GeoJSONSource).setData(overlay.url);
+      loadedSources.current.add(id);
+    }
+    map.setLayoutProperty(`${id}-fill`, 'visibility', checked ? 'visible' : 'none');
+    map.setLayoutProperty(`${id}-line`, 'visibility', checked ? 'visible' : 'none');
+  };
   const resetMap = () => mapRef.current?.flyTo({ center: [174.76, -36.91], zoom: 9.4, essential: true });
 
   return <main className="viewer-shell">
