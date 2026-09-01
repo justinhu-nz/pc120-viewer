@@ -7,8 +7,9 @@ import { ChevronDown, Info, Layers3, LocateFixed, Menu, PanelLeftClose, RotateCc
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 
-type ViewMode = 'proposed' | 'operative' | 'overlay';
+type ViewMode = 'proposed' | 'operative' | 'overlay' | 'overlayPlus';
 type Selection = { category: string; layer: string; lng: number; lat: number } | null;
+type ViewSnapshot = { mode: ViewMode; activeOverlays: Record<string, boolean>; colourBusinessZones: boolean; showEstimatedStoreys: boolean };
 
 const zoneColours: Record<string, string> = {
   'Residential - Large Lot Zone': '#ffffa1', 'Residential - Single House Zone': '#f2ebd4',
@@ -85,6 +86,22 @@ export default function PC120Map() {
   const [colourBusinessZones, setColourBusinessZones] = useState(true);
   const [showEstimatedStoreys, setShowEstimatedStoreys] = useState(false);
   const [mapError, setMapError] = useState('');
+  const viewStateRef = useRef<ViewSnapshot>({ mode: 'proposed', activeOverlays: {}, colourBusinessZones: true, showEstimatedStoreys: false });
+  const viewHistoryRef = useRef<[ViewSnapshot, ViewSnapshot] | null>(null);
+
+  const applySnapshot = (snapshot: ViewSnapshot) => {
+    const copy = { ...snapshot, activeOverlays: { ...snapshot.activeOverlays } };
+    viewStateRef.current = copy;
+    setMode(copy.mode); setActiveOverlays(copy.activeOverlays);
+    setColourBusinessZones(copy.colourBusinessZones); setShowEstimatedStoreys(copy.showEstimatedStoreys);
+  };
+  const commitView = (changes: Partial<ViewSnapshot>) => {
+    const current = viewStateRef.current;
+    const next = { ...current, ...changes, activeOverlays: changes.activeOverlays ? { ...changes.activeOverlays } : { ...current.activeOverlays } };
+    if (JSON.stringify(current) === JSON.stringify(next)) return;
+    viewHistoryRef.current = [{ ...current, activeOverlays: { ...current.activeOverlays } }, next];
+    applySnapshot(next);
+  };
 
   useEffect(() => {
     if (!container.current || mapRef.current) return; let disposed = false;
@@ -130,8 +147,8 @@ export default function PC120Map() {
 
   useEffect(() => {
     const map = mapRef.current; if (!map || !ready) return;
-    const proposedVisible = mode === 'proposed' || mode === 'overlay';
-    const operativeVisible = mode === 'operative' || mode === 'overlay';
+    const proposedVisible = mode === 'proposed' || mode === 'overlay' || mode === 'overlayPlus';
+    const operativeVisible = mode === 'operative' || mode === 'overlay' || mode === 'overlayPlus';
     if (operativeVisible && !loadedSources.current.has('operative')) {
       loadedSources.current.add('operative');
       loadGeoJSON(map, 'operative', dataUrl('operative-zoning.geojson')).catch((error: Error) => {
@@ -168,18 +185,38 @@ export default function PC120Map() {
     map.setLayoutProperty('business-restore-fill', 'visibility', restore ? 'visible' : 'none');
     map.setLayoutProperty('business-restore-line', 'visibility', restore ? 'visible' : 'none');
   }, [colourBusinessZones, activeOverlays.height, ready]);
-  const toggleOverlay = (id: string, checked: boolean) => {
-    setActiveOverlays((current) => ({ ...current, [id]: checked }));
+  useEffect(() => {
     const map = mapRef.current; if (!map || !ready) return;
-    if (checked && !loadedSources.current.has(id)) {
-      const overlay = overlays.find((item) => item.id === id);
-      loadedSources.current.add(id);
-      if (overlay) loadGeoJSON(map, id, overlay.url).catch((error: Error) => {
-        loadedSources.current.delete(id); setMapError(error.message);
-      });
-    }
-    map.setLayoutProperty(`${id}-fill`, 'visibility', checked ? 'visible' : 'none');
-    map.setLayoutProperty(`${id}-line`, 'visibility', checked ? 'visible' : 'none');
+    overlays.forEach((overlay) => {
+      const checked = Boolean(activeOverlays[overlay.id]);
+      if (checked && !loadedSources.current.has(overlay.id)) {
+        loadedSources.current.add(overlay.id);
+        loadGeoJSON(map, overlay.id, overlay.url).catch((error: Error) => {
+          loadedSources.current.delete(overlay.id); setMapError(error.message);
+        });
+      }
+      map.setLayoutProperty(`${overlay.id}-fill`, 'visibility', checked ? 'visible' : 'none');
+      map.setLayoutProperty(`${overlay.id}-line`, 'visibility', checked ? 'visible' : 'none');
+    });
+  }, [activeOverlays, ready]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (event.code !== 'Space' || event.repeat || target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target?.tagName ?? '')) return;
+      const history = viewHistoryRef.current; if (!history) return;
+      event.preventDefault();
+      const [previous, current] = history;
+      viewHistoryRef.current = [current, previous];
+      applySnapshot(previous);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+  const toggleOverlay = (id: string, checked: boolean) => commitView({ activeOverlays: { ...viewStateRef.current.activeOverlays, [id]: checked } });
+  const chooseMode = (nextMode: ViewMode) => {
+    if (nextMode === 'overlayPlus') {
+      commitView({ mode: nextMode, activeOverlays: { ...viewStateRef.current.activeOverlays, height: true }, colourBusinessZones: true, showEstimatedStoreys: true });
+    } else commitView({ mode: nextMode });
   };
   const resetMap = () => mapRef.current?.flyTo({ center: [174.76, -36.91], zoom: 9.4, essential: true });
 
@@ -188,14 +225,14 @@ export default function PC120Map() {
     <header className="topbar"><div className="brand-mark">120</div><div className="brand-copy"><h1>PC120 Viewer</h1><p>Auckland’s proposed housing plan</p></div><div className="topbar-actions"><span className={`status-dot ${ready ? 'is-ready' : mapError ? 'is-error' : ''}`} /><span className="status-text">{ready ? 'Map ready' : mapError ? `Map error: ${mapError}` : 'Loading basemap…'}</span><Button variant="outline" size="icon" aria-label="Reset map view" onClick={resetMap}><RotateCcw /></Button><Button variant="outline" size="icon" className="mobile-menu" aria-label="Open map controls" onClick={() => setSidebarOpen(true)}><Menu /></Button></div></header>
     <aside className={`control-panel ${sidebarOpen ? 'is-open' : ''}`}>
       <div className="panel-heading"><div><span className="eyebrow">Explore the proposal</span><h2>Planning layers</h2></div><Button variant="ghost" size="icon" aria-label="Close controls" onClick={() => setSidebarOpen(false)}><PanelLeftClose /></Button></div>
-      <section className="control-section"><label className="control-label">Plan view</label><div className="segmented segmented-three" role="group" aria-label="Plan view"><button className={mode === 'proposed' ? 'active' : ''} onClick={() => setMode('proposed')}>PC120</button><button className={mode === 'operative' ? 'active' : ''} onClick={() => setMode('operative')}>Current</button><button className={mode === 'overlay' ? 'active' : ''} onClick={() => setMode('overlay')}>Overlay</button></div><p className="section-note">Overlay draws PC120 seamlessly above the operative Unitary Plan.</p></section>
+      <section className="control-section"><label className="control-label">Plan view</label><div className="segmented segmented-four" role="group" aria-label="Plan view"><button className={mode === 'proposed' ? 'active' : ''} onClick={() => chooseMode('proposed')}>PC120</button><button className={mode === 'operative' ? 'active' : ''} onClick={() => chooseMode('operative')}>Current</button><button className={mode === 'overlay' ? 'active' : ''} onClick={() => chooseMode('overlay')}>Overlay</button><button className={mode === 'overlayPlus' ? 'active' : ''} onClick={() => chooseMode('overlayPlus')}>Overlay+</button></div><p className="section-note">Overlay+ enables height estimates and Business-zone colouring. Press <kbd>Space</kbd> to swap the last two complete views.</p></section>
       <section className="control-section"><label className="control-label">Jump to an area</label><button className="place-select" onClick={() => setPlaceOpen((value) => !value)}><span><LocateFixed /> Choose a centre</span><ChevronDown className={placeOpen ? 'rotate' : ''} /></button>{placeOpen && <div className="place-menu">{places.map(([name, lng, lat, zoom]) => <button key={name} onClick={() => { mapRef.current?.flyTo({ center: [lng, lat], zoom, essential: true }); setPlaceOpen(false); }}>{name}</button>)}</div>}</section>
-      <section className="control-section"><label className="control-label">Context layers</label><div className="layer-list">{overlays.map((item) => <label className="layer-row" key={item.id}><span className="layer-swatch" style={{ backgroundColor: item.id === 'height' ? tenStoreyColour : item.colour }} /><span>{item.label}</span><Switch checked={Boolean(activeOverlays[item.id])} onCheckedChange={(checked) => toggleOverlay(item.id, checked)} /></label>)}</div>{activeOverlays.height && <div className="storey-controls"><div className="storey-key"><span style={{ backgroundColor: '#eb7d17' }} /><b>6 storeys</b><small>22m / 22m*</small></div><div className="storey-key"><span style={{ backgroundColor: '#d94b16' }} /><b>8 storeys</b><small>27m / 27m*</small></div><label className="storey-key editable"><input type="color" value={tenStoreyColour} onChange={(event) => setTenStoreyColour(event.target.value)} aria-label="10-storey colour" /><b>10 storeys</b><small>34.5m / 34.5m*</small></label><label className="storey-key editable"><input type="color" value={fifteenStoreyColour} onChange={(event) => setFifteenStoreyColour(event.target.value)} aria-label="15-storey colour" /><b>15 storeys</b><small>50m / 50m*</small></label><label className="layer-row estimate-colour-toggle"><span className="layer-swatch estimate-swatch" /><span>Height variation control storey estimate colours</span><Switch checked={showEstimatedStoreys} onCheckedChange={setShowEstimatedStoreys} /></label>{showEstimatedStoreys && <p className="estimate-note">Indicative estimates: 2 storeys at 7–9m, 3 at 13m, 4 at 15–16m, 5 at 18–19.5m, 6 at 21–22.5m, 7 at 24–25m, 9 at 30–32.5m, 15 at 48.5m, and 23 at 75m.</p>}<label className="layer-row business-colour-toggle"><span className="layer-swatch business-swatch" /><span>Colour Business zones</span><Switch checked={colourBusinessZones} onCheckedChange={setColourBusinessZones} /></label></div>}</section>
+      <section className="control-section"><label className="control-label">Context layers</label><div className="layer-list">{overlays.map((item) => <label className="layer-row" key={item.id}><span className="layer-swatch" style={{ backgroundColor: item.id === 'height' ? tenStoreyColour : item.colour }} /><span>{item.label}</span><Switch checked={Boolean(activeOverlays[item.id])} onCheckedChange={(checked) => toggleOverlay(item.id, checked)} /></label>)}</div>{activeOverlays.height && <div className="storey-controls"><div className="storey-key"><span style={{ backgroundColor: '#eb7d17' }} /><b>6 storeys</b><small>22m / 22m*</small></div><div className="storey-key"><span style={{ backgroundColor: '#d94b16' }} /><b>8 storeys</b><small>27m / 27m*</small></div><label className="storey-key editable"><input type="color" value={tenStoreyColour} onChange={(event) => setTenStoreyColour(event.target.value)} aria-label="10-storey colour" /><b>10 storeys</b><small>34.5m / 34.5m*</small></label><label className="storey-key editable"><input type="color" value={fifteenStoreyColour} onChange={(event) => setFifteenStoreyColour(event.target.value)} aria-label="15-storey colour" /><b>15 storeys</b><small>50m / 50m*</small></label><label className="layer-row estimate-colour-toggle"><span className="layer-swatch estimate-swatch" /><span>Height variation control storey estimate colours</span><Switch checked={showEstimatedStoreys} onCheckedChange={(checked) => commitView({ showEstimatedStoreys: checked })} /></label>{showEstimatedStoreys && <p className="estimate-note">Indicative estimates: 2 storeys at 7–9m, 3 at 13m, 4 at 15–16m, 5 at 18–19.5m, 6 at 21–22.5m, 7 at 24–25m, 9 at 30–32.5m, 15 at 48.5m, and 23 at 75m.</p>}<label className="layer-row business-colour-toggle"><span className="layer-swatch business-swatch" /><span>Colour Business zones</span><Switch checked={colourBusinessZones} onCheckedChange={(checked) => commitView({ colourBusinessZones: checked })} /></label></div>}</section>
       <section className="control-section legend-section"><label className="control-label">Original plan colours</label>{Object.entries(zoneColours).slice(0, 6).map(([label, colour]) => <div className="legend-row" key={label}><span style={{ backgroundColor: colour }} /><p>{categoryLabel(label)}</p></div>)}<div className="legend-row"><span style={{ backgroundColor: '#fc5c94' }} /><p>Business zones</p></div><div className="legend-row"><span style={{ backgroundColor: '#52b529' }} /><p>Open space and rural</p></div></section>
       <footer className="panel-footer"><Info /> Planning data supplied by Auckland Council. This viewer is informational and not a legal planning document.</footer>
     </aside>
     {!sidebarOpen && <Button className="open-panel" onClick={() => setSidebarOpen(true)}><Layers3 /> Layers</Button>}
-    <div className="map-key">{mode === 'overlay' ? <><span className="key-dot current-dot" />Current plan <span className="key-dot" />PC120 above</> : <><span className={`key-dot ${mode === 'operative' ? 'current-dot' : ''}`} />{mode === 'proposed' ? 'PC120 proposed zoning' : 'Operative Unitary Plan'}</>}</div>
+    <div className="map-key">{mode === 'overlay' || mode === 'overlayPlus' ? <><span className="key-dot current-dot" />Current plan <span className="key-dot" />PC120 above</> : <><span className={`key-dot ${mode === 'operative' ? 'current-dot' : ''}`} />{mode === 'proposed' ? 'PC120 proposed zoning' : 'Operative Unitary Plan'}</>}</div>
     {selection && <article className="selection-card"><Button variant="ghost" size="icon-sm" className="selection-close" aria-label="Close details" onClick={() => setSelection(null)}><X /></Button><span className="eyebrow">Selected location</span><h3>{selection.layer.includes('height') ? storeyLabel(selection.category) : categoryLabel(selection.category)}</h3><p>{selection.layer.includes('height') ? 'PC120 height variation control' : selection.layer.includes('fill') ? 'Zoning classification' : 'Planning overlay'}</p><small>{selection.lat.toFixed(5)}, {selection.lng.toFixed(5)}</small></article>}
   </main>;
 }
