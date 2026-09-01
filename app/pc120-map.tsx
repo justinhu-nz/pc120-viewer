@@ -69,6 +69,7 @@ export default function PC120Map() {
   const [tenStoreyColour, setTenStoreyColour] = useState('#c63d0c'); const [fifteenStoreyColour, setFifteenStoreyColour] = useState('#dd1d08');
   const [colourBusinessZones, setColourBusinessZones] = useState(true);
   const [showEstimatedStoreys, setShowEstimatedStoreys] = useState(false);
+  const [mapError, setMapError] = useState('');
 
   useEffect(() => {
     if (!container.current || mapRef.current) return; let disposed = false;
@@ -77,6 +78,11 @@ export default function PC120Map() {
       const map = new maplibregl.Map({ container: container.current, style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json', center: [174.76, -36.91], zoom: 9.4, minZoom: 7, maxZoom: 18, attributionControl: false });
       mapRef.current = map; map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
       map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: 'Auckland Council data' }));
+      map.on('error', (event) => {
+        const message = event.error?.message || 'Unknown map loading error';
+        console.error('PC120 map error:', message, event);
+        setMapError(message);
+      });
       map.on('load', () => {
         ([['operative', dataUrl('operative-zoning.geojson')], ['proposed', dataUrl('pc120-zoning.geojson')]] as const).forEach(([id, url]) => {
           map.addSource(`${id}-source`, { type: 'geojson', data: id === 'proposed' ? url : emptyGeoJSON });
@@ -157,7 +163,7 @@ export default function PC120Map() {
 
   return <main className="viewer-shell">
     <div ref={container} className="map-canvas" aria-label="Interactive Auckland PC120 zoning map" />
-    <header className="topbar"><div className="brand-mark">120</div><div className="brand-copy"><h1>PC120 Viewer</h1><p>Auckland’s proposed housing plan</p></div><div className="topbar-actions"><span className={`status-dot ${ready ? 'is-ready' : ''}`} /><span className="status-text">{ready ? 'Map ready' : 'Loading layers…'}</span><Button variant="outline" size="icon" aria-label="Reset map view" onClick={resetMap}><RotateCcw /></Button><Button variant="outline" size="icon" className="mobile-menu" aria-label="Open map controls" onClick={() => setSidebarOpen(true)}><Menu /></Button></div></header>
+    <header className="topbar"><div className="brand-mark">120</div><div className="brand-copy"><h1>PC120 Viewer</h1><p>Auckland’s proposed housing plan</p></div><div className="topbar-actions"><span className={`status-dot ${ready ? 'is-ready' : mapError ? 'is-error' : ''}`} /><span className="status-text">{ready ? 'Map ready' : mapError ? `Map error: ${mapError}` : 'Loading basemap…'}</span><Button variant="outline" size="icon" aria-label="Reset map view" onClick={resetMap}><RotateCcw /></Button><Button variant="outline" size="icon" className="mobile-menu" aria-label="Open map controls" onClick={() => setSidebarOpen(true)}><Menu /></Button></div></header>
     <aside className={`control-panel ${sidebarOpen ? 'is-open' : ''}`}>
       <div className="panel-heading"><div><span className="eyebrow">Explore the proposal</span><h2>Planning layers</h2></div><Button variant="ghost" size="icon" aria-label="Close controls" onClick={() => setSidebarOpen(false)}><PanelLeftClose /></Button></div>
       <section className="control-section"><label className="control-label">Plan view</label><div className="segmented segmented-three" role="group" aria-label="Plan view"><button className={mode === 'proposed' ? 'active' : ''} onClick={() => setMode('proposed')}>PC120</button><button className={mode === 'operative' ? 'active' : ''} onClick={() => setMode('operative')}>Current</button><button className={mode === 'overlay' ? 'active' : ''} onClick={() => setMode('overlay')}>Overlay</button></div><p className="section-note">Overlay draws PC120 seamlessly above the operative Unitary Plan.</p></section>
