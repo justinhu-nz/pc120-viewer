@@ -32,6 +32,11 @@ const dataUrl = (filename: string) => {
   return typeof window === 'undefined' ? relative : new URL(relative, window.location.href).href;
 };
 const emptyGeoJSON = { type: 'FeatureCollection', features: [] } as const;
+const baseStyle = {
+  version: 8,
+  sources: {},
+  layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#eef1ed' } }],
+} as const;
 const overlays = [
   { id: 'walkable', label: 'Walkable catchments', url: dataUrl('walkable-catchments.geojson'), colour: '#2563eb' },
   { id: 'transport', label: 'Frequent transport corridor', url: dataUrl('frequent-transport.geojson'), colour: '#7c3aed' },
@@ -75,7 +80,7 @@ export default function PC120Map() {
     if (!container.current || mapRef.current) return; let disposed = false;
     import('maplibre-gl').then((maplibregl) => {
       if (disposed || !container.current) return;
-      const map = new maplibregl.Map({ container: container.current, style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json', center: [174.76, -36.91], zoom: 9.4, minZoom: 7, maxZoom: 18, attributionControl: false });
+      const map = new maplibregl.Map({ container: container.current, style: baseStyle as never, center: [174.76, -36.91], zoom: 9.4, minZoom: 7, maxZoom: 18, attributionControl: false });
       mapRef.current = map; map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
       map.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: 'Auckland Council data' }));
       map.on('error', (event) => {
