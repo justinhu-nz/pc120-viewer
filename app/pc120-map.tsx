@@ -37,6 +37,12 @@ const baseStyle = {
   sources: {},
   layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#eef1ed' } }],
 } as const;
+const loadGeoJSON = async (map: MapLibreMap, sourceId: string, url: string) => {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Could not load ${url} (${response.status})`);
+  const data = await response.json();
+  (map.getSource(`${sourceId}-source`) as GeoJSONSource).setData(data);
+};
 const overlays = [
   { id: 'walkable', label: 'Walkable catchments', url: dataUrl('walkable-catchments.geojson'), colour: '#2563eb' },
   { id: 'transport', label: 'Frequent transport corridor', url: dataUrl('frequent-transport.geojson'), colour: '#7c3aed' },
@@ -67,7 +73,7 @@ const storeyLabel = (height: string) => {
 
 export default function PC120Map() {
   const container = useRef<HTMLDivElement>(null); const mapRef = useRef<MapLibreMap | null>(null);
-  const loadedSources = useRef(new Set<string>(['proposed']));
+  const loadedSources = useRef(new Set<string>());
   const [ready, setReady] = useState(false); const [mode, setMode] = useState<ViewMode>('proposed');
   const [activeOverlays, setActiveOverlays] = useState<Record<string, boolean>>({}); const [sidebarOpen, setSidebarOpen] = useState(true);
   const [selection, setSelection] = useState<Selection>(null); const [placeOpen, setPlaceOpen] = useState(false);
@@ -90,7 +96,7 @@ export default function PC120Map() {
       });
       map.on('load', () => {
         ([['operative', dataUrl('operative-zoning.geojson')], ['proposed', dataUrl('pc120-zoning.geojson')]] as const).forEach(([id, url]) => {
-          map.addSource(`${id}-source`, { type: 'geojson', data: id === 'proposed' ? url : emptyGeoJSON });
+          map.addSource(`${id}-source`, { type: 'geojson', data: emptyGeoJSON });
           map.addLayer({ id: `${id}-fill`, type: 'fill', source: `${id}-source`, paint: { 'fill-color': zoneExpression as never, 'fill-opacity': 1 }, layout: { visibility: id === 'proposed' ? 'visible' : 'none' } });
           map.addLayer({ id: `${id}-line`, type: 'line', source: `${id}-source`, paint: { 'line-color': '#767676', 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.2, 15, 0.9], 'line-opacity': 0.42 }, layout: { visibility: id === 'proposed' ? 'visible' : 'none' } });
         });
@@ -109,7 +115,9 @@ export default function PC120Map() {
         const selectable = ['proposed-fill', 'operative-fill', ...overlays.map((item) => `${item.id}-fill`)];
         map.on('mousemove', selectable, () => { map.getCanvas().style.cursor = 'pointer'; }); map.on('mouseleave', selectable, () => { map.getCanvas().style.cursor = ''; });
         map.on('click', (event: MapMouseEvent) => { const visible = selectable.filter((id) => map.getLayer(id) && map.getLayoutProperty(id, 'visibility') !== 'none'); const feature = map.queryRenderedFeatures(event.point, { layers: visible })[0]; if (!feature) { setSelection(null); return; } setSelection({ category: String(feature.properties?.category ?? 'Mapped area'), layer: feature.layer.id, lng: event.lngLat.lng, lat: event.lngLat.lat }); });
-        setReady(true);
+        loadGeoJSON(map, 'proposed', dataUrl('pc120-zoning.geojson'))
+          .then(() => { loadedSources.current.add('proposed'); setReady(true); })
+          .catch((error: Error) => { console.error('PC120 zoning load error:', error); setMapError(error.message); });
       });
     });
     return () => { disposed = true; mapRef.current?.remove(); mapRef.current = null; };
@@ -120,8 +128,10 @@ export default function PC120Map() {
     const proposedVisible = mode === 'proposed' || mode === 'overlay';
     const operativeVisible = mode === 'operative' || mode === 'overlay';
     if (operativeVisible && !loadedSources.current.has('operative')) {
-      (map.getSource('operative-source') as GeoJSONSource).setData(dataUrl('operative-zoning.geojson'));
       loadedSources.current.add('operative');
+      loadGeoJSON(map, 'operative', dataUrl('operative-zoning.geojson')).catch((error: Error) => {
+        loadedSources.current.delete('operative'); setMapError(error.message);
+      });
     }
     map.setLayoutProperty('proposed-fill', 'visibility', proposedVisible ? 'visible' : 'none');
     map.setLayoutProperty('proposed-line', 'visibility', proposedVisible ? 'visible' : 'none');
@@ -158,8 +168,10 @@ export default function PC120Map() {
     const map = mapRef.current; if (!map || !ready) return;
     if (checked && !loadedSources.current.has(id)) {
       const overlay = overlays.find((item) => item.id === id);
-      if (overlay) (map.getSource(`${id}-source`) as GeoJSONSource).setData(overlay.url);
       loadedSources.current.add(id);
+      if (overlay) loadGeoJSON(map, id, overlay.url).catch((error: Error) => {
+        loadedSources.current.delete(id); setMapError(error.message);
+      });
     }
     map.setLayoutProperty(`${id}-fill`, 'visibility', checked ? 'visible' : 'none');
     map.setLayoutProperty(`${id}-line`, 'visibility', checked ? 'visible' : 'none');
