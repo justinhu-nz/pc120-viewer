@@ -13,6 +13,7 @@ The viewer includes:
 - Height variation controls
 - Walkable catchments
 - Frequent transport corridors
+- Regionally significant volcanic viewshafts
 - Withdrawal area
 - Click-to-inspect zoning details
 - Auckland centre shortcuts
