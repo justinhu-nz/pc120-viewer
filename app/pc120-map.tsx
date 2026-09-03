@@ -3,12 +3,12 @@
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { useEffect, useRef, useState } from 'react';
 import type { GeoJSONSource, Map as MapLibreMap, MapMouseEvent } from 'maplibre-gl';
-import { ChevronDown, Info, Layers3, LocateFixed, Menu, PanelLeftClose, RotateCcw, X } from 'lucide-react';
+import { Info, Layers3, Menu, PanelLeftClose, RotateCcw, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 
 type ViewMode = 'proposed' | 'operative' | 'overlay' | 'overlayPlus';
-type Selection = { category: string; layer: string; lng: number; lat: number; name?: string; schedule?: string } | null;
+type Selection = { category: string; layer: string; lng: number; lat: number; name?: string; schedule?: string; viewshaftName?: string } | null;
 type ViewSnapshot = { mode: ViewMode; activeOverlays: Record<string, boolean>; colourBusinessZones: boolean; showEstimatedStoreys: boolean };
 
 const zoneColours: Record<string, string> = {
@@ -37,6 +37,8 @@ const publicUrl = (filename: string) => {
   return typeof window === 'undefined' ? relative : new URL(relative, window.location.href).href;
 };
 const emptyGeoJSON = { type: 'FeatureCollection', features: [] } as const;
+const waterCategories = ['Water', 'Coastal - General Coastal Marine Zone', 'Coastal - Mooring Zone'];
+const landFilter = ['!', ['in', ['get', 'category'], ['literal', waterCategories]]] as never;
 const baseStyle = {
   version: 8,
   sources: {},
@@ -52,10 +54,9 @@ const overlays = [
   { id: 'walkable', label: 'Walkable catchments', url: dataUrl('walkable-catchments.geojson'), colour: '#2563eb' },
   { id: 'transport', label: 'Frequent transport corridor', url: dataUrl('frequent-transport.geojson'), colour: '#7c3aed' },
   { id: 'height', label: 'Height variation controls', url: dataUrl('pc120-height.geojson'), colour: '#db2777' },
-  { id: 'viewshafts', label: 'Volcanic viewshafts', url: dataUrl('volcanic-viewshafts.geojson'), colour: '#d97706' },
+  { id: 'viewshafts', label: 'Volcanic viewshafts', hint: 'Protected sightlines — cap building height', url: dataUrl('volcanic-viewshafts.geojson'), colour: '#d97706' },
   { id: 'withdrawal', label: 'Withdrawal area', url: dataUrl('withdrawal-area.geojson'), colour: '#111827' },
 ];
-const places = [['Central Auckland', 174.7645, -36.8509, 12], ['Albany', 174.6985, -36.7278, 12.5], ['Henderson', 174.6311, -36.881, 12.5], ['Manukau', 174.879, -36.993, 12.5], ['Papakura', 174.9439, -37.0657, 12.5]] as const;
 const categoryLabel = (value: string) => value.replace('Residential - ', '').replace('Business - ', '').replace(' Zone', '');
 const storeyValues = ['22m', '22m*', '27m', '27m*', '34.5m', '34.5m*', '50m', '50m*'];
 const estimatedHeightValues = ['7m', '8m', '9m', '13m', '13m*', '15m', '16m*', '18m', '18m*', '19.5m', '19.5m*', '21m', '21m*', '22.5m', '22.5m*', '24m*', '25m', '30m', '32.5m', '32.5m*', '48.5m', '75m'];
@@ -82,7 +83,7 @@ export default function PC120Map() {
   const loadedSources = useRef(new Set<string>());
   const [ready, setReady] = useState(false); const [mode, setMode] = useState<ViewMode>('proposed');
   const [activeOverlays, setActiveOverlays] = useState<Record<string, boolean>>({}); const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [selection, setSelection] = useState<Selection>(null); const [placeOpen, setPlaceOpen] = useState(false);
+  const [selection, setSelection] = useState<Selection>(null);
   const [tenStoreyColour, setTenStoreyColour] = useState('#c63d0c'); const [fifteenStoreyColour, setFifteenStoreyColour] = useState('#dd1d08');
   const [colourBusinessZones, setColourBusinessZones] = useState(true);
   const [showEstimatedStoreys, setShowEstimatedStoreys] = useState(false);
@@ -118,17 +119,32 @@ export default function PC120Map() {
         setMapError(message);
       });
       map.on('load', () => {
+        map.addSource('osm-basemap', {
+          type: 'raster', tileSize: 256, maxzoom: 19,
+          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          attribution: '© OpenStreetMap contributors',
+        });
+        map.addLayer({ id: 'osm-basemap', type: 'raster', source: 'osm-basemap', paint: { 'raster-opacity': 1 } });
         ([['operative', dataUrl('operative-zoning.geojson')], ['proposed', dataUrl('pc120-zoning.geojson')]] as const).forEach(([id, url]) => {
           map.addSource(`${id}-source`, { type: 'geojson', data: emptyGeoJSON });
-          map.addLayer({ id: `${id}-fill`, type: 'fill', source: `${id}-source`, paint: { 'fill-color': zoneExpression as never, 'fill-opacity': 1 }, layout: { visibility: id === 'proposed' ? 'visible' : 'none' } });
-          map.addLayer({ id: `${id}-line`, type: 'line', source: `${id}-source`, paint: { 'line-color': '#767676', 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.2, 15, 0.9], 'line-opacity': 0.42 }, layout: { visibility: id === 'proposed' ? 'visible' : 'none' } });
+          map.addLayer({ id: `${id}-fill`, type: 'fill', source: `${id}-source`, filter: landFilter, paint: { 'fill-color': zoneExpression as never, 'fill-opacity': 1 }, layout: { visibility: id === 'proposed' ? 'visible' : 'none' } });
+          map.addLayer({ id: `${id}-line`, type: 'line', source: `${id}-source`, filter: landFilter, paint: { 'line-color': '#767676', 'line-width': ['interpolate', ['linear'], ['zoom'], 8, 0.2, 15, 0.9], 'line-opacity': 0.42 }, layout: { visibility: id === 'proposed' ? 'visible' : 'none' } });
         });
         overlays.forEach((item) => {
           map.addSource(`${item.id}-source`, { type: 'geojson', data: emptyGeoJSON });
           const isHeight = item.id === 'height';
+          const isViewshaft = item.id === 'viewshafts';
           const filter = isHeight ? ['in', ['get', 'category'], ['literal', storeyValues]] as never : undefined;
-          map.addLayer({ id: `${item.id}-fill`, type: 'fill', source: `${item.id}-source`, ...(filter ? { filter } : {}), paint: { 'fill-color': isHeight ? storeyColours(tenStoreyColour, fifteenStoreyColour) as never : item.colour, 'fill-opacity': isHeight ? 1 : 0.18 }, layout: { visibility: 'none' } });
-          map.addLayer({ id: `${item.id}-line`, type: 'line', source: `${item.id}-source`, ...(filter ? { filter } : {}), paint: { 'line-color': isHeight ? storeyColours(tenStoreyColour, fifteenStoreyColour) as never : item.colour, 'line-width': isHeight ? 1.8 : 1.4, 'line-opacity': 0.9 }, layout: { visibility: 'none' } });
+          const fillPaint = isViewshaft
+            ? { 'fill-color': '#fbf6ec', 'fill-opacity': 0.62 }
+            : { 'fill-color': isHeight ? storeyColours(tenStoreyColour, fifteenStoreyColour) as never : item.colour, 'fill-opacity': isHeight ? 0.72 : 0.18 };
+          const linePaint = isViewshaft
+            ? { 'line-color': item.colour, 'line-width': 1.3, 'line-opacity': 0.85, 'line-dasharray': [2, 1.6] }
+            : isHeight
+              ? { 'line-color': '#7c2d12', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 0.5, 15, 1.1], 'line-opacity': 0.55 }
+              : { 'line-color': item.colour, 'line-width': 1.4, 'line-opacity': 0.9 };
+          map.addLayer({ id: `${item.id}-fill`, type: 'fill', source: `${item.id}-source`, ...(filter ? { filter } : {}), paint: fillPaint as never, layout: { visibility: 'none' } });
+          map.addLayer({ id: `${item.id}-line`, type: 'line', source: `${item.id}-source`, ...(filter ? { filter } : {}), paint: linePaint as never, layout: { visibility: 'none' } });
           if (isHeight) {
             const businessFilter = ['in', ['get', 'category'], ['literal', businessZones]] as never;
             map.addLayer({ id: 'business-restore-fill', type: 'fill', source: 'proposed-source', filter: businessFilter, paint: { 'fill-color': zoneExpression as never, 'fill-opacity': 1 }, layout: { visibility: 'none' } });
@@ -137,7 +153,21 @@ export default function PC120Map() {
         });
         const selectable = ['proposed-fill', 'operative-fill', ...overlays.map((item) => `${item.id}-fill`)];
         map.on('mousemove', selectable, () => { map.getCanvas().style.cursor = 'pointer'; }); map.on('mouseleave', selectable, () => { map.getCanvas().style.cursor = ''; });
-        map.on('click', (event: MapMouseEvent) => { const visible = selectable.filter((id) => map.getLayer(id) && map.getLayoutProperty(id, 'visibility') !== 'none'); const feature = map.queryRenderedFeatures(event.point, { layers: visible })[0]; if (!feature) { setSelection(null); return; } setSelection({ category: String(feature.properties?.category ?? 'Mapped area'), layer: feature.layer.id, lng: event.lngLat.lng, lat: event.lngLat.lat, name: feature.properties?.NAME ? String(feature.properties.NAME) : undefined, schedule: feature.properties?.SCHEDULE ? String(feature.properties.SCHEDULE) : undefined }); });
+        map.on('click', (event: MapMouseEvent) => {
+          const visible = selectable.filter((id) => map.getLayer(id) && map.getLayoutProperty(id, 'visibility') !== 'none');
+          const features = map.queryRenderedFeatures(event.point, { layers: visible });
+          if (!features.length) { setSelection(null); return; }
+          const viewshaft = features.find((f) => f.layer.id === 'viewshafts-fill');
+          const priority = ['height-fill', 'proposed-fill', 'operative-fill', 'walkable-fill', 'transport-fill', 'withdrawal-fill'];
+          const primary = features.find((f) => f.layer.id !== 'viewshafts-fill' && priority.includes(f.layer.id)) ?? viewshaft ?? features[0];
+          setSelection({
+            category: String(primary.properties?.category ?? 'Mapped area'), layer: primary.layer.id,
+            lng: event.lngLat.lng, lat: event.lngLat.lat,
+            name: primary.properties?.NAME ? String(primary.properties.NAME) : undefined,
+            schedule: primary.properties?.SCHEDULE ? String(primary.properties.SCHEDULE) : undefined,
+            viewshaftName: viewshaft && viewshaft !== primary ? String(viewshaft.properties?.NAME || 'a nearby') : undefined,
+          });
+        });
         loadGeoJSON(map, 'proposed', dataUrl('pc120-zoning.geojson'))
           .then(() => { loadedSources.current.add('proposed'); setReady(true); })
           .catch((error: Error) => { console.error('PC120 zoning load error:', error); setMapError(error.message); });
@@ -171,7 +201,6 @@ export default function PC120Map() {
     const map = mapRef.current; if (!map || !ready) return;
     const expression = storeyColours(tenStoreyColour, fifteenStoreyColour) as never;
     map.setPaintProperty('height-fill', 'fill-color', expression);
-    map.setPaintProperty('height-line', 'line-color', expression);
   }, [tenStoreyColour, fifteenStoreyColour, ready]);
   useEffect(() => {
     const map = mapRef.current; if (!map || !ready) return;
@@ -216,7 +245,7 @@ export default function PC120Map() {
   const toggleOverlay = (id: string, checked: boolean) => commitView({ activeOverlays: { ...viewStateRef.current.activeOverlays, [id]: checked } });
   const chooseMode = (nextMode: ViewMode) => {
     if (nextMode === 'overlayPlus') {
-      commitView({ mode: nextMode, activeOverlays: { ...viewStateRef.current.activeOverlays, height: true }, colourBusinessZones: true, showEstimatedStoreys: false });
+      commitView({ mode: nextMode, activeOverlays: { ...viewStateRef.current.activeOverlays, height: true }, colourBusinessZones: false, showEstimatedStoreys: false });
     } else if (nextMode === 'operative') {
       commitView({ mode: nextMode, activeOverlays: { ...viewStateRef.current.activeOverlays, walkable: false, transport: false, height: false }, showEstimatedStoreys: false });
     } else commitView({ mode: nextMode });
@@ -225,17 +254,16 @@ export default function PC120Map() {
 
   return <main className="viewer-shell">
     <div ref={container} className="map-canvas" aria-label="Interactive Auckland PC120 zoning map" />
-    <header className="topbar"><div className="brand-mark">120</div><div className="brand-copy"><h1>PC120 Viewer</h1><p>Auckland’s proposed housing plan</p></div><div className="topbar-actions"><span className={`status-dot ${ready ? 'is-ready' : mapError ? 'is-error' : ''}`} /><span className="status-text">{ready ? 'Map ready' : mapError ? `Map error: ${mapError}` : 'Loading basemap…'}</span><Button variant="outline" size="icon" aria-label="Reset map view" onClick={resetMap}><RotateCcw /></Button><Button variant="outline" size="icon" className="mobile-menu" aria-label="Open map controls" onClick={() => setSidebarOpen(true)}><Menu /></Button></div></header>
+    <header className="topbar"><div className="brand-mark">120</div><div className="brand-copy"><h1>PC120 Viewer</h1><p>Auckland’s proposed housing plan</p></div><div className="topbar-actions"><span className="status-pill"><span className={`status-dot ${ready ? 'is-ready' : mapError ? 'is-error' : ''}`} />{ready ? 'Map ready' : mapError ? `Map error: ${mapError}` : 'Loading…'}</span><Button variant="outline" size="icon" aria-label="Reset map view" title="Reset view" onClick={resetMap}><RotateCcw /></Button><Button variant="outline" size="icon" className="mobile-menu" aria-label="Open map controls" onClick={() => setSidebarOpen(true)}><Menu /></Button></div></header>
     <aside className={`control-panel ${sidebarOpen ? 'is-open' : ''}`}>
       <div className="panel-heading"><div><span className="eyebrow">Explore the proposal</span><h2>Planning layers</h2></div><Button variant="ghost" size="icon" aria-label="Close controls" onClick={() => setSidebarOpen(false)}><PanelLeftClose /></Button></div>
       <section className="control-section"><label className="control-label">Plan view</label><div className="segmented segmented-four" role="group" aria-label="Plan view"><button className={mode === 'proposed' ? 'active' : ''} onClick={() => chooseMode('proposed')}>PC120</button><button className={mode === 'operative' ? 'active' : ''} onClick={() => chooseMode('operative')}>Current</button><button className={mode === 'overlay' ? 'active' : ''} onClick={() => chooseMode('overlay')}>Overlay</button><button className={mode === 'overlayPlus' ? 'active' : ''} onClick={() => chooseMode('overlayPlus')}>Overlay+</button></div><p className="section-note">Overlay+ enables mapped height colours and Business-zone colouring. Press <kbd>Space</kbd> to swap the last two complete views.</p></section>
-      <section className="control-section"><label className="control-label">Jump to an area</label><button className="place-select" onClick={() => setPlaceOpen((value) => !value)}><span><LocateFixed /> Choose a centre</span><ChevronDown className={placeOpen ? 'rotate' : ''} /></button>{placeOpen && <div className="place-menu">{places.map(([name, lng, lat, zoom]) => <button key={name} onClick={() => { mapRef.current?.flyTo({ center: [lng, lat], zoom, essential: true }); setPlaceOpen(false); }}>{name}</button>)}</div>}</section>
-      <section className="control-section"><label className="control-label">Context layers</label><div className="layer-list">{overlays.map((item) => { const unavailable = mode === 'operative' && !['withdrawal', 'viewshafts'].includes(item.id); return <label className={`layer-row ${unavailable ? 'is-disabled' : ''}`} key={item.id}><span className="layer-swatch" style={{ backgroundColor: item.id === 'height' ? tenStoreyColour : item.colour }} /><span>{item.label}</span><Switch disabled={unavailable} checked={Boolean(activeOverlays[item.id])} onCheckedChange={(checked) => toggleOverlay(item.id, checked)} /></label>; })}</div>{activeOverlays.height && <div className="storey-controls"><div className="storey-key"><span style={{ backgroundColor: '#eb7d17' }} /><b>6 storeys</b><small>22m / 22m*</small></div><div className="storey-key"><span style={{ backgroundColor: '#d94b16' }} /><b>8 storeys</b><small>27m / 27m*</small></div><label className="storey-key editable"><input type="color" value={tenStoreyColour} onChange={(event) => setTenStoreyColour(event.target.value)} aria-label="10-storey colour" /><b>10 storeys</b><small>34.5m / 34.5m*</small></label><label className="storey-key editable"><input type="color" value={fifteenStoreyColour} onChange={(event) => setFifteenStoreyColour(event.target.value)} aria-label="15-storey colour" /><b>15 storeys</b><small>50m / 50m*</small></label><label className="layer-row estimate-colour-toggle"><span className="layer-swatch estimate-swatch" /><span>Height variation control storey estimate colours</span><Switch checked={showEstimatedStoreys} onCheckedChange={(checked) => commitView({ showEstimatedStoreys: checked })} /></label>{showEstimatedStoreys && <p className="estimate-note">Indicative estimates: 2 storeys at 7–9m, 3 at 13m, 4 at 15–16m, 5 at 18–19.5m, 6 at 21–22.5m, 7 at 24–25m, 9 at 30–32.5m, 15 at 48.5m, and 23 at 75m.</p>}<label className="layer-row business-colour-toggle"><span className="layer-swatch business-swatch" /><span>Colour Business zones</span><Switch checked={colourBusinessZones} onCheckedChange={(checked) => commitView({ colourBusinessZones: checked })} /></label></div>}</section>
+<section className="control-section"><label className="control-label">Context layers</label><div className="layer-list">{overlays.map((item) => { const unavailable = mode === 'operative' && !['withdrawal', 'viewshafts'].includes(item.id); const hint = (item as { hint?: string }).hint; return <label className={`layer-row ${unavailable ? 'is-disabled' : ''}`} key={item.id}><span className={`layer-swatch${item.id === 'viewshafts' ? ' viewshaft-swatch' : ''}`} style={item.id === 'viewshafts' ? undefined : { backgroundColor: item.id === 'height' ? tenStoreyColour : item.colour }} /><span className="layer-text">{item.label}{hint && <small className="layer-hint">{hint}</small>}</span><Switch disabled={unavailable} checked={Boolean(activeOverlays[item.id])} onCheckedChange={(checked) => toggleOverlay(item.id, checked)} /></label>; })}</div>{activeOverlays.height && <div className="storey-controls"><div className="storey-key"><span style={{ backgroundColor: '#eb7d17' }} /><b>6 storeys</b><small>22m / 22m*</small></div><div className="storey-key"><span style={{ backgroundColor: '#d94b16' }} /><b>8 storeys</b><small>27m / 27m*</small></div><label className="storey-key editable"><input type="color" value={tenStoreyColour} onChange={(event) => setTenStoreyColour(event.target.value)} aria-label="10-storey colour" /><b>10 storeys</b><small>34.5m / 34.5m*</small></label><label className="storey-key editable"><input type="color" value={fifteenStoreyColour} onChange={(event) => setFifteenStoreyColour(event.target.value)} aria-label="15-storey colour" /><b>15 storeys</b><small>50m / 50m*</small></label><label className="layer-row estimate-colour-toggle"><span className="layer-swatch estimate-swatch" /><span>Height variation control storey estimate colours</span><Switch checked={showEstimatedStoreys} onCheckedChange={(checked) => commitView({ showEstimatedStoreys: checked })} /></label>{showEstimatedStoreys && <p className="estimate-note">Indicative estimates: 2 storeys at 7–9m, 3 at 13m, 4 at 15–16m, 5 at 18–19.5m, 6 at 21–22.5m, 7 at 24–25m, 9 at 30–32.5m, 15 at 48.5m, and 23 at 75m.</p>}<label className="layer-row business-colour-toggle"><span className="layer-swatch business-swatch" /><span>Colour Business zones</span><Switch checked={colourBusinessZones} onCheckedChange={(checked) => commitView({ colourBusinessZones: checked })} /></label></div>}</section>
       <section className="control-section legend-section"><label className="control-label">Original plan colours</label>{Object.entries(zoneColours).slice(0, 6).map(([label, colour]) => <div className="legend-row" key={label}><span style={{ backgroundColor: colour }} /><p>{categoryLabel(label)}</p></div>)}<div className="legend-row"><span style={{ backgroundColor: '#fc5c94' }} /><p>Business zones</p></div><div className="legend-row"><span style={{ backgroundColor: '#52b529' }} /><p>Open space and rural</p></div></section>
       <footer className="panel-footer"><Info /> Planning data supplied by Auckland Council. This viewer is informational and not a legal planning document.</footer>
     </aside>
     {!sidebarOpen && <Button className="open-panel" onClick={() => setSidebarOpen(true)}><Layers3 /> Layers</Button>}
     <div className="map-key">{mode === 'overlay' || mode === 'overlayPlus' ? <><span className="key-dot current-dot" />Current plan <span className="key-dot" />PC120 above</> : <><span className={`key-dot ${mode === 'operative' ? 'current-dot' : ''}`} />{mode === 'proposed' ? 'PC120 proposed zoning' : 'Operative Unitary Plan'}</>}</div>
-    {selection && <article className="selection-card"><Button variant="ghost" size="icon-sm" className="selection-close" aria-label="Close details" onClick={() => setSelection(null)}><X /></Button><span className="eyebrow">Selected location</span><h3>{selection.layer.includes('viewshafts') ? (selection.name || 'Volcanic viewshaft') : selection.layer.includes('height') ? storeyLabel(selection.category) : categoryLabel(selection.category)}</h3><p>{selection.layer.includes('viewshafts') ? `Volcanic viewshaft${selection.schedule ? ` · Schedule ${selection.schedule}` : ''}` : selection.layer.includes('height') ? 'PC120 height variation control' : selection.layer.includes('fill') ? 'Zoning classification' : 'Planning overlay'}</p><small>{selection.lat.toFixed(5)}, {selection.lng.toFixed(5)}</small></article>}
+    {selection && <article className="selection-card"><Button variant="ghost" size="icon-sm" className="selection-close" aria-label="Close details" onClick={() => setSelection(null)}><X /></Button><span className="eyebrow">Selected location</span><h3>{selection.layer.includes('viewshafts') ? (selection.name || 'Volcanic viewshaft') : selection.layer.includes('height') ? storeyLabel(selection.category) : categoryLabel(selection.category)}</h3><p>{selection.layer.includes('viewshafts') ? `Volcanic viewshaft${selection.schedule ? ` · Schedule ${selection.schedule}` : ''}` : selection.layer.includes('height') ? 'PC120 height variation control' : selection.layer.includes('fill') ? 'Zoning classification' : 'Planning overlay'}</p>{selection.viewshaftName && !selection.layer.includes('viewshafts') && <div className="conflict-note"><span className="conflict-hatch" /><p>Under the <b>{selection.viewshaftName}</b> volcanic viewshaft — this protected sightline can limit achievable height below the zoned maximum.</p></div>}<small>{selection.lat.toFixed(5)}, {selection.lng.toFixed(5)}</small></article>}
   </main>;
 }
